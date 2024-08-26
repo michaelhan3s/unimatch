@@ -9,6 +9,7 @@ from dataloader.flow.datasets import FlyingChairs, FlyingThings3D, MpiSintel, KI
 from utils import frame_utils
 from utils.flow_viz import save_vis_flow_tofile, flow_to_image
 import imageio
+import cv2
 
 from utils.utils import InputPadder, compute_out_of_boundary_mask
 from glob import glob
@@ -637,6 +638,21 @@ def validate_kitti(model,
 
     return results
 
+def draw_flow2(img, flow, flow_mask=None):
+    vis_flow = img.copy()
+    h, w = flow.shape[:2]
+    # draw arrow of the optical flol
+    step = 16  # step of the arrow
+    for y in range(0, h, step):
+        for x in range(0, w, step):
+            if flow_mask is not None and flow_mask[y, x] > 0:
+                    continue
+
+            dx, dy = flow[y, x]
+            pt1 = (int(x), int(y))
+            pt2 = (int(x + dx), int(y + dy))
+            cv2.arrowedLine(vis_flow, pt1, pt2, (0, 255, 0), 1)
+    return vis_flow
 
 @torch.no_grad()
 def inference_flow(model,
@@ -693,6 +709,13 @@ def inference_flow(model,
         else:
             image1 = frame_utils.read_gen(filenames[test_id])
             image2 = frame_utils.read_gen(filenames[test_id + 1])
+        
+        print(f'processing {filenames[test_id]} and {filenames[test_id+1]}')
+
+        width, height = image1.size
+        new_size = (int(width / 2), int(height / 2))
+        image1 = image1.resize(new_size)
+        image2 = image2.resize(new_size)
 
         image1 = np.array(image1).astype(np.uint8)
         image2 = np.array(image2).astype(np.uint8)
@@ -787,16 +810,32 @@ def inference_flow(model,
             # occlusion is 1
             if fwd_bwd_consistency_check:
                 fwd_occ, bwd_occ = forward_backward_consistency_check(flow_pr[:1], flow_pr[1:])  # [1, H, W] float
+                #print(f'type = {type(fwd_occ[0].cpu().numpy())}, shape={fwd_occ[0].shape}, shape={fwd_occ[0].cpu().numpy().shape}')
 
-                if inference_video is not None:
-                    fwd_occ_file = os.path.join(output_path, '%04d_occ_fwd.png' % test_id)
-                    bwd_occ_file = os.path.join(output_path, '%04d_occ_bwd.png' % test_id)
-                else:
-                    fwd_occ_file = os.path.join(output_path, os.path.basename(filenames[test_id])[:-4] + '_occ_fwd.png')
-                    bwd_occ_file = os.path.join(output_path, os.path.basename(filenames[test_id])[:-4] + '_occ_bwd.png')
+                fwd_flow = flow_pr[0].permute(1, 2, 0).cpu().numpy()  # [H, W, 2]
+                img_color = cv2.imread(filenames[test_id])
+                img_color = cv2.resize(img_color, (fwd_flow.shape[1], fwd_flow.shape[0]))
+                vis_flow = draw_flow2(img_color, fwd_flow, fwd_occ[0].cpu().numpy())
+                output_file = os.path.join(output_path, os.path.basename(filenames[test_id])[:-4] + '_fwd_flow.png')
+                cv2.imwrite(output_file, vis_flow)
 
-                Image.fromarray((fwd_occ[0].cpu().numpy() * 255.).astype(np.uint8)).save(fwd_occ_file)
-                Image.fromarray((bwd_occ[0].cpu().numpy() * 255.).astype(np.uint8)).save(bwd_occ_file)
+                bwd_flow = flow_pr[1].permute(1, 2, 0).cpu().numpy()  # [H, W, 2]
+                img_color = cv2.imread(filenames[test_id + 1])
+                img_color = cv2.resize(img_color, (bwd_flow.shape[1], bwd_flow.shape[0]))
+                vis_flow = draw_flow2(img_color, bwd_flow)
+                output_file = os.path.join(output_path, os.path.basename(filenames[test_id])[:-4] + '_bwd_flow.png')
+                cv2.imwrite(output_file, vis_flow)
+
+
+                # if inference_video is not None:
+                #     fwd_occ_file = os.path.join(output_path, '%04d_occ_fwd.png' % test_id)
+                #     bwd_occ_file = os.path.join(output_path, '%04d_occ_bwd.png' % test_id)
+                # else:
+                #     fwd_occ_file = os.path.join(output_path, os.path.basename(filenames[test_id])[:-4] + '_occ_fwd.png')
+                #     bwd_occ_file = os.path.join(output_path, os.path.basename(filenames[test_id])[:-4] + '_occ_bwd.png')
+
+                # Image.fromarray((fwd_occ[0].cpu().numpy() * 255.).astype(np.uint8)).save(fwd_occ_file)
+                # Image.fromarray((bwd_occ[0].cpu().numpy() * 255.).astype(np.uint8)).save(bwd_occ_file)
 
         if save_flo_flow:
             if inference_video is not None:
